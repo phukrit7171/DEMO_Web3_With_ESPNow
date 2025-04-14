@@ -17,6 +17,7 @@ typedef struct {
     float temperature;    // Sample sensor data
     bool ledState;
     char message[32];
+    unsigned long timestamp; // Timestamp for latency measurement
 } MessageData;
 
 MessageData sentData;
@@ -93,6 +94,10 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
         Serial.print(": ");
         Serial.println(receivedData.message);
         digitalWrite(LED_PIN, receivedData.ledState);
+        unsigned long latency = millis() - receivedData.timestamp;
+        Serial.print("Latency: ");
+        Serial.print(latency);
+        Serial.println(" ms");
     }
 }
 
@@ -136,19 +141,20 @@ void loop() {
     static int counter = 0;
     unsigned long currentTime = millis();
     
-    // Send discovery message every 5 seconds
-    if(currentTime - lastDiscovery > 5000) {
+    // Send discovery message every 2 seconds
+    if(currentTime - lastDiscovery > 2000) {
         sentData.messageType = 0;  // Discovery message
         esp_now_send(broadcastAddress, (uint8_t *)&sentData, sizeof(MessageData));
         lastDiscovery = currentTime;
     }
     
-    // Send data message to all known peers every 2 seconds
-    if(currentTime - lastData > 2000) {
+    // Send data message to all known peers every 1 seconds
+    if(currentTime - lastData > 1000) {
         sentData.messageType = 1;  // Data message
         sentData.temperature = random(20, 30);
         sentData.ledState = !sentData.ledState;
         snprintf(sentData.message, sizeof(sentData.message), "Hello #%d", counter++);
+        sentData.timestamp = millis(); // Record the time the message was sent
         
         // Send to all known peers
         for(int i = 0; i < peerCount; i++) {
