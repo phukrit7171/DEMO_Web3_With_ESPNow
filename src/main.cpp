@@ -1,166 +1,219 @@
 #include <Arduino.h>
-#include <esp_now.h>
 #include <WiFi.h>
-#include <esp_wifi.h>
+#include <esp_now.h>
+// #include <M5Stack.h>
+#include <M5Unified.h>
 
-// Broadcast address to send to all devices
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
-// Maximum number of peers we can track
-#define MAX_PEERS 20
-uint8_t peerAddresses[MAX_PEERS][6];
-int peerCount = 0;
+int test = 0; // ตัวแปรสำหรับทดสอบการส่งข้อมูล
 
 typedef struct {
-    uint8_t messageType;  // 0: discovery, 1: data
-    char nodeName[32];    // Identifier for the node
-    float temperature;    // Sample sensor data
-    bool ledState;
-    char message[32];
-    unsigned long timestamp; // Timestamp for latency measurement
-} MessageData;
+  uint8_t type; // 0: Add peer | 1: Data message
+  uint8_t length; // Length of the data
+  uint8_t data[100]; // Data payload
+  uint8_t mac[6];
+} DataMessage;
 
-MessageData sentData;
-const int LED_PIN = 2;
+uint8_t knownPeers[20][6];
+int peerCount = 0;
 
-// Generate a random node name
-void generateNodeName(char* nodeName) {
-    snprintf(nodeName, 32, "Node-%04X", esp_random() & 0xFFFF);
+void addPeer(const uint8_t *mac) {
+  Serial.print("TEST addPeer: ");
+  uint8_t myMac[6];
+  WiFi.macAddress(myMac); 
+  if (memcmp(mac, myMac, 6) == 0) {
+    return;
+  }
+  for (int i = 0; i < peerCount; i++) {
+    if (memcmp(knownPeers[i], mac, 6) == 0) {
+      return;
+    }
+  }
+
+ if(peerCount < 20){
+    memcpy(knownPeers[peerCount],mac, 6);
+    peerCount++;
+    Serial.print("Add peer: ");
+    for (int i = 0; i < 6; i++) Serial.printf("%02X:", mac[i]);
+    Serial.printf(" peerCount=%d\n", peerCount);
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, mac, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    esp_now_add_peer(&peerInfo);
+  }
+  else {
+    Serial.println("Peer list full, cannot add more peers.");
+  }
+
+}
+void OnRecvDisplay(DataMessage *message) {
+  // แสดงผลที่ตำแหน่งเดียวทุกครั้ง (หรือจะสุ่มตำแหน่งก็ได้)
+  int y = 40;
+
+  M5.Lcd.fillRect(0, y, 320, 50, BLACK);
+  M5.Lcd.setCursor(10, y);
+  M5.Lcd.setTextSize(3);
+  M5.Lcd.setTextColor(WHITE, BLACK);
+  M5.Lcd.print("Mac: ");
+  for (int i = 0; i < 6; i++) {
+    if (i > 0) M5.Lcd.print(":");
+    M5.Lcd.printf("%02X", message->mac[i]);
+  }
+  y += 30;
+  M5.Lcd.setCursor(10, y);
+  M5.Lcd.print("Data: ");
+  for (int i = 0; i < message->length; i++) {
+    M5.Lcd.print((char)message->data[i]);
+  }
+}
+//  void OnRecvDisplay(DataMessage *message) {
+//   Serial.print("OnRecvDisplay: message->mac = ");
+//     for (int i = 0; i < 6; i++) Serial.printf("%02X:", message->mac[i]);
+//     Serial.println();
+
+//     for (int i = 0; i < peerCount; i++) {
+//       Serial.print("knownPeers["); Serial.print(i); Serial.print("] = ");
+//       for (int j = 0; j < 6; j++) Serial.printf("%02X:", knownPeers[i][j]);
+//       Serial.println();
+//     }  int index = -1;
+  
+//   for (int i = 0; i < peerCount; i++) {
+//     if (memcmp(knownPeers[i], message->mac, 6) == 0) {
+//       index = i;
+//       break;
+//     }
+//   }
+//   if (index == -1) return; 
+//   Serial.println("TEST OnRecvDisplay After");
+
+//   int y = 10 + index * 50;
+
+//   M5.Lcd.fillRect(0, y, 320, 50, BLACK);
+
+//   M5.Lcd.setCursor(10, y);
+//   M5.Lcd.setTextSize(3);
+//   M5.Lcd.setTextColor(WHITE, BLACK);
+//   M5.Lcd.print("Mac: ");
+//   for (int i = 0; i < 6; i++) {
+//     if (i > 0) M5.Lcd.print(":");
+//     M5.Lcd.printf("%02X", message->mac[i]);
+//   }
+//   y += 30;
+//   M5.Lcd.setCursor(10, y);
+//   M5.Lcd.print("Data: ");
+//   for (int i = 0; i < message->length; i++) {
+//     M5.Lcd.print((char)message->data[i]);
+//   }
+// }
+bool alreadyBroadcastedToThisMAC(const uint8_t *mac) {
+  for (int i = 0; i < peerCount; i++) {
+    if (memcmp(knownPeers[i], mac, 6) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+void broadcastMyMAC() {
+  Serial.println("TEST broadcastMyMAC");
+  DataMessage message;
+  message.type = 0; 
+  message.length = 6; 
+  uint8_t macAddr[6];
+  WiFi.macAddress(macAddr);
+  memcpy(message.mac, macAddr, 6);
+
+  uint8_t broadcast[] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+  
+  esp_now_send(broadcast, (uint8_t*)&message, sizeof(message));
+}
+void OnRecv(const uint8_t *mac, const uint8_t *data, int len){
+  DataMessage *message = (DataMessage*)data;
+  Serial.printf("OnRecv: type=%d, from %02X:%02X:%02X:%02X:%02X:%02X\n",
+                message->type, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  if(message->type == 0) {
+    Serial.println("Received broadcast (type 0)");
+    if (!alreadyBroadcastedToThisMAC(mac)) {
+      broadcastMyMAC(); 
+    }
+
+    
+    addPeer(message->mac);
+  } else if (message->type == 1 ) { 
+    
+    OnRecvDisplay(message); 
+
+    Serial.printf("Received data from %02X:%02X:%02X:%02X:%02X:%02X: %.*s\n",
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                  message->length, message->data);
+    Serial.println("Data received from peer:");
+    for(auto text : message->data) {
+      Serial.print((char)text);
+    }   
+  }
 }
 
-bool addPeerIfNew(const uint8_t *mac_addr) {
-    // Check if peer already exists
-    for(int i = 0; i < peerCount; i++) {
-        if(memcmp(peerAddresses[i], mac_addr, 6) == 0) {
-            return false;  // Peer already exists
-        }
-    }
-    
-    // Add new peer if we have space
-    if(peerCount < MAX_PEERS) {
-        memcpy(peerAddresses[peerCount], mac_addr, 6);
-        
-        // Add to ESP-NOW peers
-        esp_now_peer_info_t peerInfo = {};
-        memcpy(peerInfo.peer_addr, mac_addr, 6);
-        peerInfo.channel = 1;
-        peerInfo.encrypt = false;
-        
-        if (esp_now_add_peer(&peerInfo) == ESP_OK) {
-            char macStr[18];
-            snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
-                     mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-            Serial.print("Added new peer: ");
-            Serial.println(macStr);
-            peerCount++;
-            return true;
-        }
-    }
-    return false;
-}
 
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    if (status != ESP_NOW_SEND_SUCCESS) {
-        // Remove failed peer
-        for(int i = 0; i < peerCount; i++) {
-            if(memcmp(peerAddresses[i], mac_addr, 6) == 0) {
-                esp_now_del_peer(mac_addr);
-                // Shift remaining peers
-                for(int j = i; j < peerCount - 1; j++) {
-                    memcpy(peerAddresses[j], peerAddresses[j+1], 6);
-                }
-                peerCount--;
-                break;
-            }
-        }
-    }
-}
+// void onSend(const uint8_t *mac_addr, esp_now_send_status_t status) {
+//   Serial.print("Send Status: ");
+//   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Failed");
+// }
 
-void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
-    MessageData receivedData;
-    memcpy(&receivedData, incomingData, sizeof(MessageData));
-    
-    // Add sender to peers if new
-    addPeerIfNew(mac_addr);
-    
-    if(receivedData.messageType == 0) {
-        // Discovery message received
-        Serial.print("Discovery from node: ");
-        Serial.println(receivedData.nodeName);
+
+
+void sendData(const char *msg) {
+  Serial.println("TEST sendData");
+  DataMessage message;
+  message.type = 1; 
+  message.length = strlen(msg);
+  memcpy(message.data, msg, message.length);
+  uint8_t macAddr[6];
+  WiFi.macAddress(macAddr);
+  memcpy(message.mac, macAddr, 6);
+  
+
+  for (int i = 0; i < peerCount; i++)
+  {
+    esp_err_t result = esp_now_send(knownPeers[i], (uint8_t*)&message, sizeof(message));
+    if (result == ESP_OK) {
+      Serial.println("Data sent successfully");
     } else {
-        // Data message received
-        Serial.print("Data from ");
-        Serial.print(receivedData.nodeName);
-        Serial.print(": ");
-        Serial.println(receivedData.message);
-        digitalWrite(LED_PIN, receivedData.ledState);
-        unsigned long latency = millis() - receivedData.timestamp;
-        Serial.print("Latency: ");
-        Serial.print(latency);
-        Serial.println(" ms");
-    }
+      Serial.println("Failed to send data");
+    }   
+  }
 }
 
 void setup() {
-    Serial.begin(115200);
-    pinMode(LED_PIN, OUTPUT);
-    
-    // Set device as a Wi-Fi Station
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
+  
+  Serial.begin(115200);
+  M5.begin();
+  Serial.println("M5Stack ESP-NOW Test");
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setRotation(3);
+  M5.Lcd.fillScreen(BLACK);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  randomSeed(millis());
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW init failed");
+    return;
+  }
+  esp_now_peer_info_t peerInfo = {};
+  uint8_t broadcast[] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+  memcpy(peerInfo.peer_addr, broadcast, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+  esp_now_add_peer(&peerInfo);
+  esp_now_register_recv_cb(OnRecv);
+  // esp_now_register_send_cb(onSend);
+  broadcastMyMAC(); 
 
-    // Initialize ESP-NOW
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("Error initializing ESP-NOW");
-        return;
-    }
-
-    // Set WiFi channel
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    
-    // Register callbacks
-    esp_now_register_send_cb(OnDataSent);
-    esp_now_register_recv_cb(OnDataRecv);
-    
-    // Add broadcast address as peer for discovery
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-    peerInfo.channel = 1;
-    peerInfo.encrypt = false;
-    esp_now_add_peer(&peerInfo);
-    
-    // Generate random node name
-    generateNodeName(sentData.nodeName);
-    Serial.print("My node name: ");
-    Serial.println(sentData.nodeName);
 }
 
 void loop() {
-    static unsigned long lastDiscovery = 0;
-    static unsigned long lastData = 0;
-    static int counter = 0;
-    unsigned long currentTime = millis();
-    
-    // Send discovery message every 2 seconds
-    if(currentTime - lastDiscovery > 2000) {
-        sentData.messageType = 0;  // Discovery message
-        esp_now_send(broadcastAddress, (uint8_t *)&sentData, sizeof(MessageData));
-        lastDiscovery = currentTime;
-    }
-    
-    // Send data message to all known peers every 1 seconds
-    if(currentTime - lastData > 1000) {
-        sentData.messageType = 1;  // Data message
-        sentData.temperature = random(20, 30);
-        sentData.ledState = !sentData.ledState;
-        snprintf(sentData.message, sizeof(sentData.message), "Hello #%d", counter++);
-        sentData.timestamp = millis(); // Record the time the message was sent
-        
-        // Send to all known peers
-        for(int i = 0; i < peerCount; i++) {
-            esp_now_send(peerAddresses[i], (uint8_t *)&sentData, sizeof(MessageData));
-        }
-        
-        lastData = currentTime;
-    }
+delay(random(2000, 5000));
+    M5.update();
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", test);
+    sendData(buf);
+    test++;
 }
